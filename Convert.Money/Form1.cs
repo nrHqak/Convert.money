@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
@@ -41,7 +43,7 @@ namespace Convert.Money
             Text = "Convert.Money";
             Size = new Size(900, 650);
             StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Color.FromArgb(245, 248, 252);
+            BackColor = Color.FromArgb(236, 241, 248);
             Font = new Font("Segoe UI", 10);
 
             var tabs = new TabControl
@@ -112,21 +114,23 @@ namespace Convert.Money
             _calculatorTextBox = new TextBox
             {
                 Location = new Point(10, 230),
-                Width = 420,
+                Width = 520,
                 BorderStyle = BorderStyle.FixedSingle
             };
 
-            _calcButton = CreateButton("Посчитать", new Point(450, 228));
+            _calcButton = CreateButton("Посчитать", new Point(550, 228));
+            _calcButton.Width = 160;
             _calcButton.Click += CalculateButton_Click;
 
-            _useResultButton = CreateButton("Использовать в сумме", new Point(570, 228));
+            _useResultButton = CreateButton("Использовать в сумме", new Point(720, 228));
+            _useResultButton.Width = 160;
             _useResultButton.Click += UseResultButton_Click;
 
             _calculatorResultLabel = new Label
             {
                 Text = "Результат калькулятора: -",
                 AutoSize = true,
-                Location = new Point(10, 270),
+                Location = new Point(10, 272),
                 ForeColor = Color.FromArgb(55, 65, 81)
             };
 
@@ -154,7 +158,7 @@ namespace Convert.Money
             _currencyChart = new Chart
             {
                 Location = new Point(10, 70),
-                Size = new Size(820, 430),
+                Size = new Size(840, 470),
                 BackColor = Color.White,
                 BorderlineColor = Color.Gainsboro,
                 BorderlineDashStyle = ChartDashStyle.Solid,
@@ -166,13 +170,17 @@ namespace Convert.Money
             area.AxisY.Title = "Курс к KZT";
             area.AxisX.MajorGrid.LineColor = Color.Gainsboro;
             area.AxisY.MajorGrid.LineColor = Color.Gainsboro;
+            area.AxisX.Interval = 1;
+            area.AxisY.IsStartedFromZero = false;
             _currencyChart.ChartAreas.Add(area);
 
             var series = new Series("Курс")
             {
-                ChartType = SeriesChartType.Line,
+                ChartType = SeriesChartType.Spline,
                 BorderWidth = 3,
                 Color = Color.FromArgb(37, 99, 235),
+                MarkerStyle = MarkerStyle.Circle,
+                MarkerSize = 7,
                 XValueType = ChartValueType.String
             };
             _currencyChart.Series.Add(series);
@@ -193,22 +201,22 @@ namespace Convert.Money
 
         private Button CreateButton(string text, Point location)
         {
-            return new Button
+            return new RoundedButton
             {
                 Text = text,
                 Location = location,
                 Width = 170,
-                Height = 34,
+                Height = 40,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(59, 130, 246),
-                ForeColor = Color.White
+                ForeColor = Color.White,
+                Radius = 14
             };
         }
 
         private void LoadCurrencies()
         {
             var codes = _currencyService.GetCurrencies().Select(c => c.Code).ToArray();
-
             _fromCurrencyComboBox.Items.AddRange(codes);
             _toCurrencyComboBox.Items.AddRange(codes);
             _chartCurrencyComboBox.Items.AddRange(codes);
@@ -289,31 +297,85 @@ namespace Convert.Money
         {
             string code = _chartCurrencyComboBox.SelectedItem?.ToString() ?? "USD";
             string period = _periodComboBox.SelectedItem?.ToString() ?? "День";
-
             decimal baseRate = _currencyService.GetRateToKzt(code);
+
+            List<KeyValuePair<string, decimal>> points = BuildChartPoints(period, baseRate);
+
             var series = _currencyChart.Series["Курс"];
             series.Points.Clear();
+            foreach (var point in points)
+            {
+                series.Points.AddXY(point.Key, point.Value);
+            }
 
+            decimal min = points.Min(p => p.Value);
+            decimal max = points.Max(p => p.Value);
+            decimal margin = Math.Max(1m, (max - min) * 0.35m);
+
+            var area = _currencyChart.ChartAreas["RateArea"];
+            area.AxisY.Minimum = (double)(min - margin);
+            area.AxisY.Maximum = (double)(max + margin);
+        }
+
+        private static List<KeyValuePair<string, decimal>> BuildChartPoints(string period, decimal baseRate)
+        {
             if (period == "День")
             {
-                series.Points.AddXY("Утро", baseRate - 1);
-                series.Points.AddXY("День", baseRate + 0.5m);
-                series.Points.AddXY("Вечер", baseRate);
+                return new List<KeyValuePair<string, decimal>>
+                {
+                    new KeyValuePair<string, decimal>("08:00", baseRate - 1.8m),
+                    new KeyValuePair<string, decimal>("12:00", baseRate + 0.7m),
+                    new KeyValuePair<string, decimal>("16:00", baseRate - 0.4m),
+                    new KeyValuePair<string, decimal>("20:00", baseRate + 1.1m)
+                };
             }
-            else if (period == "Неделя")
+
+            if (period == "Неделя")
             {
                 string[] labels = { "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс" };
-                for (int i = 0; i < labels.Length; i++)
+                decimal[] offsets = { -2.3m, -1.2m, 0.8m, -0.5m, 1.6m, 0.4m, -0.7m };
+
+                return labels
+                    .Select((label, i) => new KeyValuePair<string, decimal>(label, baseRate + offsets[i]))
+                    .ToList();
+            }
+
+            var monthPoints = new List<KeyValuePair<string, decimal>>();
+            for (int day = 1; day <= 30; day += 3)
+            {
+                decimal wave = (day % 2 == 0 ? 1.3m : -1.1m) + (day % 5) * 0.3m;
+                monthPoints.Add(new KeyValuePair<string, decimal>(day.ToString(), baseRate + wave));
+            }
+
+            return monthPoints;
+        }
+
+        private class RoundedButton : Button
+        {
+            public int Radius { get; set; } = 12;
+
+            protected override void OnPaint(PaintEventArgs pevent)
+            {
+                base.OnPaint(pevent);
+                using (var path = GetRoundRectangle(ClientRectangle, Radius))
                 {
-                    series.Points.AddXY(labels[i], baseRate + i - 3);
+                    Region = new Region(path);
+                    FlatAppearance.BorderSize = 0;
                 }
             }
-            else
+
+            private static GraphicsPath GetRoundRectangle(Rectangle rect, int radius)
             {
-                for (int day = 1; day <= 30; day += 3)
-                {
-                    series.Points.AddXY(day.ToString(), baseRate + (day % 5) - 2);
-                }
+                int diameter = radius * 2;
+                var path = new GraphicsPath();
+
+                path.AddArc(rect.X, rect.Y, diameter, diameter, 180, 90);
+                path.AddArc(rect.Right - diameter, rect.Y, diameter, diameter, 270, 90);
+                path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
+                path.AddArc(rect.X, rect.Bottom - diameter, diameter, diameter, 90, 90);
+                path.CloseFigure();
+
+                return path;
             }
         }
     }
